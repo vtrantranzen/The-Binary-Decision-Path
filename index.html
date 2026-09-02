@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>The Binary Path — Decision Cockpit</title>
+  <meta name="description" content="A solo decision-rehearsal instrument. One question, split in two, weighed for leverage, followed down until the next step is obvious." />
+  <meta name="theme-color" content="#1A1A16" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icon-180.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./icon-32.png" />
+  <link rel="stylesheet" href="./tailwind.css" />
+  <style>
+    html,body,#root{height:100%}
+    body{margin:0;background:#1A1A16}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="./react.production.min.js"></script>
+  <script src="./react-dom.production.min.js"></script>
+  <script src="./icons.js"></script>
+  <script src="./app.js"></script>
+  <script>
+    // Service worker is a progressive enhancement: it needs http(s)/localhost.
+    // On file:// (double-click) it's skipped; the app still runs fully.
+    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('./sw.js').catch(function(){});
+      });
+    }
+  </script>
+</body>
+</html>
