@@ -1,5 +1,5 @@
-/* The Binary Path — Decision Cockpit · service worker v6 */
-const CACHE = 'binary-path-v14';
+/* The Binary Path — Decision Cockpit · service worker v7 */
+const CACHE = 'binary-path-v15';
 const ASSETS = [
   './', './index.html', './app.js', './icons.js', './tailwind.css',
   './react.production.min.js', './react-dom.production.min.js',

@@ -3,7 +3,6 @@
    React/ReactDOM are UMD globals; icons come from LucideReact (local icons.js). */
 const { useState, useRef, useEffect } = React;
 const { Compass, Pause, Play, CornerUpLeft, Check, Pencil, Plus, X, ArrowDownRight, Circle, Lock, Users, Share2, Info, ChevronRight, Anchor, RefreshCw, KeyRound, Sparkles, Download } = LucideReact;
-
 /* ------------------------------------------------------------------ *
  *  THE BINARY PATH — Decision Cockpit
  *  A solo rehearsal instrument. The AI is co-pilot: it enumerates,
@@ -94,9 +93,11 @@ const LS = {
   model: "bp_gemini_model"
 };
 const GEM_HOST = "https://generativelanguage.googleapis.com/v1beta";
-const MODEL_OK = "bp_gemini_model_ok"; // last model that actually worked
-const MODEL_PREFER = [/flash-lite/i, /flash/i, /pro/i]; // cheapest tier first
-const MODEL_FALLBACK = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.5-flash"];
+const MODEL_OK = "bp_gemini_model_ok2"; // v2: re-pick after the quality-first model order               // last model that actually worked
+// Quality before cheapness: full flash first, then pro, lite only as a last resort.
+// (flash-lite gave thin, jargon-heavy contributors in the field.)
+const MODEL_PREFER = [/flash(?!-lite)/i, /pro/i, /flash-lite/i];
+const MODEL_FALLBACK = ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"];
 const lsGet = k => {
   try {
     return localStorage.getItem(k) || "";
@@ -152,9 +153,21 @@ const zeroQuota = (errObj, msg) => {
   }
   return /limit:\s*0\b|quota_limit_value["':\s]+0\b/i.test(msg || "");
 };
-const SUGGEST_SYSTEM = `You are the co-pilot in a binary decision-rehearsal instrument. In this step your ONLY job is to enumerate possible contributors to the decision-maker's question — the factors, forces, or levers that bear on it. You do NOT evaluate, rank, weigh, prioritize, group, or recommend anything. Ordering carries no meaning; never order by importance. You never indicate which factors matter more or what the person should do.
-Return short, atomic contributor labels (2-5 words), each a distinct factor, no duplicates, no clustering (grouping is the decision-maker's job), no explanations.
+const SUGGEST_SYSTEM = `You are the co-pilot in a binary decision-rehearsal instrument. In this step your ONLY job is to enumerate possible contributors to the branch the decision-maker is working on — the factors, forces, actions, or levers that bear on it. You do NOT evaluate, rank, weigh, prioritize, group, or recommend anything. Ordering carries no meaning; never order by importance. You never indicate which factors matter more or what the person should do.
+
+How to write each contributor:
+- One plain-language phrase of about 6 to 15 words, in everyday words a thoughtful non-specialist would use. No jargon, no buzzwords, no stacks of abstract nouns ("dynamic ethical boundary enforcement" is the kind of item to avoid).
+- Say concretely what it involves: who acts, what changes, what it costs, or what it would look like in practice.
+- Each item distinct, no duplicates, no explanations after it, no clustering (grouping is the decision-maker's job).
+- Cover the branch fairly from several angles, including items that pull in different directions, without labelling or favouring any.
+
+On a sub-branch:
+- Stay inside the current branch, but keep the original question and the person's aim in view.
+- Go one level more concrete than the level above: who does it, what comes first, how it is enforced or paid for, what it costs, who bears it.
+- Never repeat, reword, or lightly rephrase anything already used higher up the path; those are listed for you.
+
 A dial sets breadth: 0 = personal, narrow, restrained (a real life is at stake — stay to factors that clearly bear on it); 100 = research, wide, generative (surface adjacent and less-obvious factors too).
+
 Output ONLY a JSON array of strings. No prose, no markdown, no backticks.`;
 function shuffle(a) {
   const x = [...a];
@@ -168,13 +181,24 @@ function buildSuggestPrompt({
   heading,
   dial,
   count,
+  rootQuestion,
+  aim,
+  path,
   parentHeading,
   branchContributors,
+  usedAbove,
   existing
 }) {
-  const l = [`Question: "${heading}"`, `Dial: ${dial}/100. Offer about ${count} contributors.`];
-  if (parentHeading && branchContributors && branchContributors.length) l.push(`This is a sub-branch. The decision-maker formed "${heading}" by grouping these factors together, inside the larger question "${parentHeading}": ${branchContributors.join(", ")}.`, `Keep your suggestions inside this branch — contributors to "${heading}" specifically, not the whole parent question.`);
-  if (existing && existing.length) l.push(`Already listed (do not repeat): ${existing.join(", ")}.`);
+  const l = [];
+  const isSub = !!parentHeading;
+  if (rootQuestion) l.push(`Original question of the whole descent: "${rootQuestion}"`);
+  if (aim) l.push(`What the person is really after: "${aim}"`);
+  if (isSub && path && path.length) l.push(`Path so far: ${path.map(p => `"${p}"`).join(" → ")} → "${heading}"`);
+  l.push(isSub ? `Current branch to enumerate: "${heading}"` : `Question: "${heading}"`);
+  l.push(`Dial: ${dial}/100. Offer about ${count} contributors.`);
+  if (isSub && branchContributors && branchContributors.length) l.push(`The decision-maker formed "${heading}" by grouping these items together, inside "${parentHeading}": ${branchContributors.join("; ")}.`, `Break "${heading}" down into finer, more concrete contributors. Do not hand these same items back.`);
+  const used = [...new Set([...(usedAbove || []), ...(existing || [])])];
+  if (used.length) l.push(`Already used on this path (do not repeat or reword): ${used.join("; ")}.`);
   return l.join("\n");
 }
 
@@ -200,7 +224,7 @@ async function callGeminiModel(key, model, system, prompt) {
         }]
       }],
       generationConfig: {
-        temperature: 0.9,
+        temperature: 0.7,
         responseMimeType: "application/json"
       }
     })
@@ -543,6 +567,23 @@ function App() {
     if (security === "private" && !keyIsPaid && !allowFreeInPrivate) return "private-free";
     return "off";
   };
+
+  // Everything above a branch that Gemini should keep in view: the original
+  // question, the person's aim, the path of headings, and every item used so far.
+  function lineageCtx(lastAncestorId) {
+    const chain = [];
+    let x = lastAncestorId ? nodes[lastAncestorId] : null;
+    while (x) {
+      chain.unshift(x);
+      x = x.parentId ? nodes[x.parentId] : null;
+    }
+    return {
+      rootQuestion: trueQ.trim() || rootQ.trim(),
+      aim: probeAnswer.trim(),
+      path: chain.map(c => c.heading),
+      usedAbove: [...new Set(chain.flatMap(c => (c.contributors || []).map(k => k.text)))]
+    };
+  }
   function suggestCtxFor(id) {
     const n = nodes[id];
     if (!n) return {
@@ -560,6 +601,7 @@ function App() {
     return {
       heading: n.heading,
       dial,
+      ...lineageCtx(n.parentId),
       parentHeading,
       branchContributors,
       existing
@@ -630,7 +672,9 @@ function App() {
     setStage("work");
     fillSuggestions(root.id, {
       heading,
-      dial
+      dial,
+      rootQuestion: heading,
+      aim: probeAnswer.trim()
     });
   }
 
@@ -809,6 +853,7 @@ function App() {
     fillSuggestions(heavyChild.id, {
       heading: heavierName,
       dial,
+      ...lineageCtx(n.id),
       parentHeading: n.heading,
       branchContributors: n.contributors.filter(c => c.tag === _hTag).map(c => c.text)
     });
@@ -860,6 +905,7 @@ function App() {
       fillSuggestions(id, {
         heading: n.heading,
         dial,
+        ...lineageCtx(parent.id),
         parentHeading: parent.heading,
         branchContributors: parent.contributors.filter(c => c.tag === _lTag).map(c => c.text)
       });
