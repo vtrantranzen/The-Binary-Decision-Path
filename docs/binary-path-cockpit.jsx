@@ -189,11 +189,16 @@ async function callGeminiModel(key, model, system, prompt) {
   return (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
 }
 
-// Walk the candidate ladder: step past models that are retired or off the free
-// tier; stop on a real error (bad key, network). Remembers what worked.
+// A model that is busy or rate-limited right now (not a problem with the key).
+const modelBusy = (status) => status === 429 || status === 500 || status === 503 || status === 504;
+
+// Walk the candidate ladder: step past models that are retired, off the free
+// tier, overloaded (503/500) or rate-limited (429) — another model is usually
+// free when one is busy. Stop on a real error (bad key, network). Remembers
+// what worked; a busy cached model is forgotten so the next call starts fresh.
 async function callGemini(key, system, prompt) {
   const candidates = await resolveModels(key);
-  let last;
+  let last, firstBusy;
   for (const model of candidates) {
     try {
       const text = await callGeminiModel(key, model, system, prompt);
@@ -202,10 +207,15 @@ async function callGemini(key, system, prompt) {
     } catch (e) {
       last = e;
       if (modelGone(e.message, e.status) || (e.status === 429 && zeroQuota(e.body, e.message))) continue;
+      if (modelBusy(e.status)) {
+        if (!firstBusy) firstBusy = e;
+        if (lsGet(MODEL_OK) === model) lsSet(MODEL_OK, "");
+        continue;
+      }
       throw e;
     }
   }
-  throw last || new Error("No usable model available to this key.");
+  throw firstBusy || last || new Error("No usable model available to this key.");
 }
 
 // Turn a raw failure into one plain, actionable sentence.
@@ -219,7 +229,7 @@ function diagnoseLiveError(e) {
   if (s === 429) return "Usage limit reached (429) — often a per-minute cap; wait a minute and retry.";
   if (/location|region|country|not available in your/i.test(m)) return "The Gemini API isn't available in your region yet.";
   if (s === 404 || modelGone(m, s)) return "No current model available to this key — clear any manual model override to let the app auto-pick.";
-  if (s === 500 || s === 503) return "Gemini is temporarily unavailable (" + s + ") — try again shortly.";
+  if (s === 500 || s === 503) return "Every Gemini model available to this key is busy right now (" + s + ") — try again in a few minutes.";
   if (s) return "Gemini error " + s + (m ? ": " + m : "");
   return "No response — a network or CORS error (an extension, proxy, or VPN may be blocking Google; try DevTools → Network).";
 }
@@ -1942,7 +1952,7 @@ function KeyModal({ initialKey, initialPaid, initialOn, initialAllowPriv, initia
           <input value={model} onChange={e => setModel(e.target.value)} placeholder="auto — picks the best available"
             className="w-full px-3 py-2.5 rounded bg-transparent mb-1 font-mono"
             style={{ background: C.panel2, border: `1px solid ${C.line}`, color: C.ivory, fontSize: 13 }} />
-          <p className="font-mono text-[10px] mb-3" style={{ color: C.faint }}>Leave blank to let the app pick the cheapest working model from your key automatically. Only set this to force one.</p>
+          <p className="font-mono text-[10px] mb-3" style={{ color: C.faint }}>Leave blank to let the app pick the best working model from your key automatically. Only set this to force one.</p>
           {testResult && (
             <div className="rounded p-2.5 mb-4 text-[12px] leading-snug"
               style={{ background: C.panel2, border: `1px solid ${testResult.ok ? C.tealDim : C.goldDim}`, color: testResult.ok ? C.teal : C.ivory }}>
